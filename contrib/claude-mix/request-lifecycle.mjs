@@ -45,8 +45,10 @@ export function createLifecycle(req, res, log) {
     terminal = true;
     cancelled = event !== 'complete';
     mark(event);
-    // Never destroy an already completed request: its socket may be reused.
-    if (cancelled && !response?.complete) {
+    // HTTP parsing completion is not consumption completion: a backpressured
+    // response can be complete while still occupying its agent socket. Only
+    // readableEnded proves that the socket may already have been reused.
+    if (cancelled && !response?.readableEnded) {
       response?.destroy();
       upstream?.destroy();
     }

@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { spawn } from 'node:child_process';
-import { once } from 'node:events';
+import { once, EventEmitter } from 'node:events';
+import { createLifecycle } from './request-lifecycle.mjs';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -121,4 +122,46 @@ test('client cancellation during SSE closes the upstream response', async t => {
   const [res] = await once(req, 'response');
   res.on('error', () => {}); res.destroy();
   await until(() => closed);
+});
+
+test('disconnect releases a backpressured large SSE and subsequent traffic remains healthy', async t => {
+  let socketClosed = false;
+  let calls = 0;
+  const f = await fixture(t, (req, res) => {
+    req.resume();
+    if (++calls > 1) { res.end('healthy'); return; }
+    req.socket.once('close', () => { socketClosed = true; });
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    // Complete the upstream write while the downstream does not consume it.
+    res.end(Buffer.alloc(4 * 1024 * 1024, 120));
+  });
+  const req = f.request(); req.on('error', () => {});
+  const [res] = await once(req, 'response'); res.on('error', () => {});
+  res.pause();
+  await delay(30);
+  res.destroy();
+  await until(() => socketClosed);
+  assert.equal((await f.complete()).bytes.toString(), 'healthy');
+});
+
+// Reproduce the inspected agent state independently of kernel socket buffers.
+test('HTTP complete with unread buffered data is still cancelled', () => {
+  const req = new EventEmitter();
+  const res = new EventEmitter();
+  res.writableFinished = false;
+  const lifecycle = createLifecycle(req, res, () => {});
+  const upstream = new EventEmitter();
+  let requestDestroyed = false;
+  upstream.destroy = () => { requestDestroyed = true; };
+  lifecycle.request(upstream);
+  const response = new EventEmitter();
+  response.headers = {};
+  response.complete = true;
+  response.readableEnded = false;
+  let responseDestroyed = false;
+  response.destroy = () => { responseDestroyed = true; };
+  lifecycle.response(response);
+  res.emit('close');
+  assert.equal(requestDestroyed, true);
+  assert.equal(responseDestroyed, true);
 });

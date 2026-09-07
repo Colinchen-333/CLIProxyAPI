@@ -54,8 +54,15 @@ func transportKey(kind, route string, auth *cliproxyauth.Auth, base *http.Transp
 
 func sharedTransport(key transportCacheKey, build func() http.RoundTripper) http.RoundTripper {
 	transportCache.Lock()
-	defer transportCache.Unlock()
 	now := time.Now()
+	if e := transportCache.entries[key]; e != nil {
+		entry := e.Value.(*transportEntry)
+		entry.used = now
+		transportCache.order.MoveToFront(e)
+		transportCache.Unlock()
+		return entry.rt
+	}
+	var evicted []http.RoundTripper
 	for e := transportCache.order.Back(); e != nil; e = transportCache.order.Back() {
 		entry := e.Value.(*transportEntry)
 		if len(transportCache.entries) < 128 && now.Sub(entry.used) < 5*time.Minute {
@@ -63,21 +70,26 @@ func sharedTransport(key transportCacheKey, build func() http.RoundTripper) http
 		}
 		delete(transportCache.entries, entry.key)
 		transportCache.order.Remove(e)
-		if closer, ok := entry.rt.(interface{ CloseIdleConnections() }); ok {
-			closer.CloseIdleConnections()
-		}
-	}
-	if e := transportCache.entries[key]; e != nil {
-		entry := e.Value.(*transportEntry)
-		entry.used = now
-		transportCache.order.MoveToFront(e)
-		return entry.rt
+		evicted = append(evicted, entry.rt)
 	}
 	rt := build()
 	if rt != nil {
 		transportCache.entries[key] = transportCache.order.PushFront(&transportEntry{key: key, rt: rt, used: now})
 	}
+	transportCache.Unlock()
+	// Never hold the cross-provider cache lock while closing network resources.
+	for _, old := range evicted {
+		if closer, ok := old.(interface{ CloseIdleConnections() }); ok {
+			closer.CloseIdleConnections()
+		}
+	}
 	return rt
+}
+
+// Retain burst capacity without limiting active requests or changing caller transports.
+func retainBurstIdleConnections(transport *http.Transport) {
+	transport.MaxIdleConns = 1024
+	transport.MaxIdleConnsPerHost = 1024
 }
 
 func sharedProxyTransport(route string, auth *cliproxyauth.Auth) *http.Transport {
@@ -86,6 +98,7 @@ func sharedProxyTransport(route string, auth *cliproxyauth.Auth) *http.Transport
 		if transport == nil {
 			return nil
 		}
+		retainBurstIdleConnections(transport)
 		return transport
 	})
 	transport, _ := rt.(*http.Transport)
@@ -105,6 +118,7 @@ func SharedHTTP11Transport(base *http.Transport, auth *cliproxyauth.Auth) *http.
 		} else {
 			clone = base.Clone()
 		}
+		retainBurstIdleConnections(clone)
 		clone.ForceAttemptHTTP2 = false
 		clone.TLSNextProto = make(map[string]func(string, *tls.Conn) http.RoundTripper)
 		if clone.TLSClientConfig == nil {

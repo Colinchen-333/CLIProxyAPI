@@ -34,6 +34,9 @@ func TestAntigravityIndependentClientsReuseProxyHTTP11Pool(t *testing.T) {
 		t.Fatal("HTTP/1 clone is not reused")
 	}
 	transport := one.Transport.(*http.Transport)
+	if transport.MaxIdleConns != 1024 || transport.MaxIdleConnsPerHost != 1024 {
+		t.Fatal("HTTP/1 burst idle capacity missing")
+	}
 	if transport.ForceAttemptHTTP2 || len(transport.TLSClientConfig.NextProtos) != 1 || transport.TLSClientConfig.NextProtos[0] != "http/1.1" {
 		t.Fatal("HTTP/1 policy changed")
 	}

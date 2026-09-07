@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
@@ -112,4 +113,86 @@ func TestSharedTransportPreservesContextAndProxyPriority(t *testing.T) {
 			t.Fatal("global route lost priority")
 		}
 	}
+}
+
+func TestProxyTransportRetainsBurstConnections(t *testing.T) {
+	const burst = 16
+	var connections atomic.Int32
+	var arrived [2]atomic.Int32
+	gates := [2]chan struct{}{make(chan struct{}), make(chan struct{})}
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		wave := 0
+		if r.URL.Path == "/second" {
+			wave = 1
+		}
+		if arrived[wave].Add(1) == burst {
+			close(gates[wave])
+		}
+		<-gates[wave]
+		_, _ = io.WriteString(w, "ok")
+	}))
+	server.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateNew {
+			connections.Add(1)
+		}
+	}
+	server.Start()
+	defer server.Close()
+	auth := &cliproxyauth.Auth{ID: t.Name(), ProxyURL: server.URL}
+	for _, path := range []string{"/first", "/second"} {
+		results := make(chan error, burst)
+		for range burst {
+			go func() {
+				client := NewProxyAwareHTTPClient(context.Background(), nil, auth, 0)
+				resp, err := client.Get("http://upstream.invalid" + path)
+				if err == nil {
+					_, err = io.Copy(io.Discard, resp.Body)
+					_ = resp.Body.Close()
+				}
+				results <- err
+			}()
+		}
+		for range burst {
+			if err := <-results; err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if n := connections.Load(); n != burst {
+		t.Fatalf("TCP connections = %d; second burst should reuse all %d", n, burst)
+	}
+}
+
+type blockingIdleCloser struct{ started, release chan struct{} }
+
+func (b *blockingIdleCloser) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, fmt.Errorf("unused")
+}
+func (b *blockingIdleCloser) CloseIdleConnections() { close(b.started); <-b.release }
+
+func TestTransportEvictionDoesNotBlockOtherProviders(t *testing.T) {
+	blocker := &blockingIdleCloser{started: make(chan struct{}), release: make(chan struct{})}
+	sharedTransport(transportKey(t.Name(), "old", nil, nil), func() http.RoundTripper { return blocker })
+	var hit transportCacheKey
+	for i := 0; i < 127; i++ {
+		hit = transportKey(t.Name(), fmt.Sprint(i), nil, nil)
+		sharedTransport(hit, func() http.RoundTripper { return &http.Transport{} })
+	}
+	finished := make(chan struct{})
+	go func() {
+		sharedTransport(transportKey(t.Name(), "new", nil, nil), func() http.RoundTripper { return &http.Transport{} })
+		close(finished)
+	}()
+	<-blocker.started
+	hitDone := make(chan struct{})
+	go func() { sharedTransport(hit, func() http.RoundTripper { return &http.Transport{} }); close(hitDone) }()
+	select {
+	case <-hitDone:
+	case <-time.After(time.Second):
+		close(blocker.release)
+		<-finished
+		t.Fatal("idle closing blocked an unrelated provider cache hit")
+	}
+	close(blocker.release)
+	<-finished
 }

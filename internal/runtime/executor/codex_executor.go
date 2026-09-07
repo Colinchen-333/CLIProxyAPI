@@ -1035,6 +1035,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		return e.executeOpenAIImageStream(ctx, auth, req, opts)
 	}
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
+	timing := helps.NewStreamTiming(ctx, baseModel, len(req.Payload))
 
 	apiKey, baseURL := codexCreds(auth)
 	if baseURL == "" {
@@ -1108,7 +1109,13 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 
 	httpClient := helps.NewUtlsHTTPClient(ctx, e.cfg, auth, 0)
 	httpClient = reporter.TrackHTTPClient(httpClient)
+	timing.Prepared(len(upstreamBody), gjson.GetBytes(upstreamBody, "prompt_cache_key").String() != "")
 	httpResp, err := httpClient.Do(httpReq)
+	responseStatus := 0
+	if httpResp != nil {
+		responseStatus = httpResp.StatusCode
+	}
+	timing.Response(responseStatus, err != nil)
 	if err != nil {
 		helps.RecordAPIResponseError(ctx, e.cfg, err)
 		return nil, err

@@ -182,7 +182,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if r.Context().Err() != nil {
 			phase = "cancel"
 		}
-		if writer.failed || writer.status >= 500 {
+		if phase != "cancel" && (writer.failed || writer.status >= 500) {
 			phase = "error"
 		}
 		emit(phase, writer.status)

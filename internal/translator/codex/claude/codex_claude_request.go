@@ -42,7 +42,7 @@ func ConvertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool) 
 	rawJSON := inputRawJSON
 
 	template := []byte(`{"model":"","instructions":"","input":[]}`)
-	var inputItems [][]byte
+	var inputItems, toolItems [][]byte
 
 	rootResult := gjson.ParseBytes(rawJSON)
 	toolNameMap := buildReverseMapFromClaudeOriginalToShort(rawJSON)
@@ -258,9 +258,6 @@ func ConvertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool) 
 
 	}
 
-	// Assemble input once instead of copying the growing history for every item.
-	template, _ = sjson.SetRawBytes(template, "input", codexRawArray(inputItems))
-
 	// Convert tools declarations to the expected format for the Codex API.
 	toolsResult := rootResult.Get("tools")
 	if toolsResult.IsArray() {
@@ -268,7 +265,7 @@ func ConvertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool) 
 		webSearchToolNames := buildClaudeWebSearchToolNameSet(toolsResult)
 		template, _ = sjson.SetRawBytes(template, "tool_choice", convertClaudeToolChoiceToCodex(rootResult.Get("tool_choice"), toolNameMap, webSearchToolNames))
 		toolResults := toolsResult.Array()
-		toolItems := make([][]byte, 0, len(toolResults))
+		toolItems = make([][]byte, 0, len(toolResults))
 		for i := 0; i < len(toolResults); i++ {
 			toolResult := toolResults[i]
 			// Special handling: map Claude web search tool to Codex web_search
@@ -296,7 +293,6 @@ func ConvertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool) 
 			tool, _ = sjson.SetBytes(tool, "strict", false)
 			toolItems = append(toolItems, tool)
 		}
-		template, _ = sjson.SetRawBytes(template, "tools", codexRawArray(toolItems))
 	}
 
 	// Default to parallel tool calls unless tool_choice explicitly disables them.
@@ -346,6 +342,12 @@ func ConvertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool) 
 	template, _ = sjson.SetBytes(template, "store", false)
 	template, _ = sjson.SetBytes(template, "include", []string{"reasoning.encrypted_content"})
 
+	// Populate the large arrays after small field edits, preserving placeholder
+	// positions and wire order without copying the long input for each edit.
+	if toolsResult.IsArray() {
+		template, _ = sjson.SetRawBytes(template, "tools", codexRawArray(toolItems))
+	}
+	template, _ = sjson.SetRawBytes(template, "input", codexRawArray(inputItems))
 	return template
 }
 

@@ -54,3 +54,20 @@ capacity for 5000 simultaneously uploaded long contexts. Long-context acceptance
 therefore states payload bytes, tool count, concurrency, and sample count. Byte
 counts are not token counts. No arbitrary-concurrency zero-latency guarantee is
 made, and no live-provider load test is performed at the synthetic concurrency.
+
+## macOS service scheduling
+
+The live launchd service was classified as `Background`, unlike the direct
+benchmark child. Apple's launchd manual reserves that class for work not directly
+requested by the user and applies protective resource limits. A loopback gateway
+on the critical path of interactive terminals is user-requested work. It does
+not use XPC transactions, so the `Adaptive` class cannot track its HTTP activity.
+Use `ProcessType=Interactive` for this gateway service; `Standard` still permits
+CPU/I/O throttling. Do not change the official connector's identity or other apps.
+
+`python3 contrib/claude-mix/configure-gateway-qos.py` updates only this existing
+service's ProcessType, atomically and with a label check. Reload the service via
+launchd separately so the new classification takes effect. Preserve a rollback
+copy of its plist and compare actual live preparation timings afterward.
+
+Reference: [Apple launchd ProcessType documentation](https://github.com/apple-oss-distributions/launchd/blob/main/man/launchd.plist.5).

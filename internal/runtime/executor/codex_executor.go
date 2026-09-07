@@ -1670,6 +1670,7 @@ func applyCodexHeadersFromSources(r *http.Request, auth *cliproxyauth.Auth, toke
 		attrs = auth.Attributes
 	}
 	util.ApplyCustomHeadersFromAttrs(r, attrs)
+	helps.ApplyOpenCodeSessionHeader(r)
 }
 
 func newCodexStatusErr(statusCode int, body []byte) statusErr {

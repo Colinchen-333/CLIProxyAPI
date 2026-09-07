@@ -1,0 +1,11 @@
+#!/bin/zsh
+set -euo pipefail
+export PATH="/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+source "$HOME/.local/lib/claude-net/claude-mix.conf"
+source "$HOME/.local/lib/claude-net/claude-net.sh" >/dev/null 2>&1
+claude_identity 1 >/dev/null || exit 78
+exec env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY \
+         -u http_proxy -u https_proxy -u all_proxy \
+  OFFICIAL_HTTPS_PROXY="http://127.0.0.1:${NETID_PORT}" \
+  CLAUDE_OFFICIAL_TRANSPORT_PORT="${CLAUDE_OFFICIAL_TRANSPORT_PORT:-8319}" \
+  /usr/bin/env node "$HOME/.local/bin/claude-official-transport.mjs"

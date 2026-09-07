@@ -9,10 +9,13 @@ claude_identity 1 >/dev/null || {
   print -u2 "CLIProxy: official identity slot 1 unavailable; refusing split startup"
   exit 78
 }
-"$HOME/.local/bin/cliproxy-sync-opencode-go" >/dev/null
+# Credential discovery is launchd-owned and never blocks gateway readiness.
+launchctl kickstart "gui/$(id -u)/ai.lumirain.cliproxy-auth-sync" >/dev/null 2>&1 || true
+launchctl kickstart "gui/$(id -u)/ai.lumirain.claude-official-transport" >/dev/null 2>&1 || true
 exec env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY \
          -u http_proxy -u https_proxy -u all_proxy \
   "$HOME/.local/bin/cli-proxy-api" \
   --config "$HOME/.cli-proxy-api/config.yaml" --no-browser \
   --split-listen "${CLAUDE_MIX_RELAY_LISTEN:-127.0.0.1:${CLAUDE_MIX_RELAY_PORT}}" \
-  --split-official-proxy "http://127.0.0.1:${NETID_PORT}"
+  --split-official-proxy "http://127.0.0.1:${NETID_PORT}" \
+  --split-official-relay "http://127.0.0.1:${CLAUDE_OFFICIAL_TRANSPORT_PORT:-8319}"

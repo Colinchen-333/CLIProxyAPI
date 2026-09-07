@@ -3,6 +3,7 @@ package config
 // SplitRelayConfig routes Claude traffic through its dedicated local identity
 // proxy and dispatches registered own models directly into the API handler.
 type SplitRelayConfig struct {
+	OfficialRelayURL string `yaml:"official-relay-url,omitempty" json:"official-relay-url,omitempty"`
 	// Listen is a comma-separated list of literal loopback addresses.
 	Listen           string `yaml:"listen" json:"listen"`
 	OfficialProxyURL string `yaml:"official-proxy-url" json:"official-proxy-url"`

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -73,10 +74,11 @@ func (s *Server) startSplitRelay() (<-chan error, error) {
 			return key
 		},
 		OfficialProxyURL: cfg.OfficialProxyURL,
+		OfficialRelayURL: cfg.OfficialRelayURL,
 		MaxRequestBytes:  cfg.MaxRequestBytes,
 		Observe: func(event splitrelay.Event) {
 			if event.Phase == "complete" || event.Phase == "cancel" || event.Phase == "error" {
-				log.WithFields(log.Fields{
+				data, _ := json.Marshal(map[string]any{
 					"request_id": event.RequestID, "route": event.Route,
 					"model": event.Model, "phase": event.Phase,
 					"elapsed_ms":        float64(event.Elapsed.Microseconds()) / 1000,
@@ -85,7 +87,8 @@ func (s *Server) startSplitRelay() (<-chan error, error) {
 					"first_text_ms":     float64(event.FirstTextAfter.Microseconds()) / 1000,
 					"first_thinking_ms": float64(event.FirstThinkingAfter.Microseconds()) / 1000,
 					"first_tool_ms":     float64(event.FirstToolAfter.Microseconds()) / 1000,
-				}).Info("split relay request")
+				})
+				log.WithField("request_id", event.RequestID).Info("split relay request " + string(data))
 			} else {
 				log.WithFields(log.Fields{
 					"request_id": event.RequestID, "phase": event.Phase,

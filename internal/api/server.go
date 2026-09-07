@@ -197,6 +197,10 @@ type Server struct {
 	// server is the underlying HTTP server.
 	server *http.Server
 
+	// split owns the optional in-process loopback identity-routing listener.
+	split       atomic.Pointer[splitRuntime]
+	splitAPIKey atomic.Value
+
 	// muxBaseListener is the shared TCP listener used to serve both HTTP and Redis protocol traffic.
 	muxBaseListener net.Listener
 
@@ -336,6 +340,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 		exampleAPIKeySafeModeEnabled: optionState.exampleAPIKeySafeMode,
 	}
 	s.wsAuthEnabled.Store(cfg.WebsocketAuth)
+	s.updateSplitAPIKey(cfg)
 	s.exampleAPIKeySafeModeActive.Store(s.exampleAPIKeySafeModeRequired(cfg))
 	s.handlers.SetPluginHost(optionState.pluginHost)
 	if optionState.pluginHost != nil {
@@ -1503,6 +1508,12 @@ func (s *Server) Start() error {
 	if errListen != nil {
 		return fmt.Errorf("failed to start HTTP server: %v", errListen)
 	}
+	splitErrors, errSplit := s.startSplitRelay()
+	if errSplit != nil {
+		_ = listener.Close()
+		return errSplit
+	}
+	defer s.closeSplitRelay()
 
 	useTLS := s.cfg != nil && s.cfg.TLS.Enable
 	if useTLS {
@@ -1551,6 +1562,10 @@ func (s *Server) Start() error {
 	}()
 
 	select {
+	case errSplit := <-splitErrors:
+		_ = s.server.Close()
+		_ = listener.Close()
+		return fmt.Errorf("split relay stopped: %w", errSplit)
 	case errServe := <-httpErrCh:
 		if s.muxBaseListener != nil {
 			if errClose := s.muxBaseListener.Close(); errClose != nil && !errors.Is(errClose, net.ErrClosed) {
@@ -1602,6 +1617,12 @@ func (s *Server) Start() error {
 //   - error: An error if the server fails to stop
 func (s *Server) Stop(ctx context.Context) error {
 	log.Debug("Stopping API server...")
+	if split := s.split.Load(); split != nil {
+		if err := split.server.Shutdown(ctx); err != nil {
+			_ = split.server.Close()
+			log.Debugf("split relay shutdown: %v", err)
+		}
+	}
 
 	if s.keepAliveEnabled {
 		select {
@@ -1775,6 +1796,7 @@ func (s *Server) UpdateClients(cfg *config.Config) {
 		s.exampleAPIKeySafeModeActive.Store(exampleAPIKeySafeModeRequired)
 	}
 	s.cfg = cfg
+	s.updateSplitAPIKey(cfg)
 	s.wsAuthEnabled.Store(cfg.WebsocketAuth)
 	if oldCfg != nil && s.wsAuthChanged != nil && oldCfg.WebsocketAuth != cfg.WebsocketAuth {
 		s.wsAuthChanged(oldCfg.WebsocketAuth, cfg.WebsocketAuth)

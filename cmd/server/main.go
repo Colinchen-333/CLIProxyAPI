@@ -83,6 +83,8 @@ func main() {
 	var vertexImport string
 	var vertexImportPrefix string
 	var configPath string
+	var splitListen string
+	var splitOfficialProxy string
 	var password string
 	var homeJWT string
 	var homeDisableClusterDiscovery bool
@@ -100,6 +102,8 @@ func main() {
 	flag.BoolVar(&kimiLogin, "kimi-login", false, "Login to Kimi using OAuth")
 	flag.BoolVar(&xaiLogin, "xai-login", false, "Login to xAI using OAuth")
 	flag.StringVar(&configPath, "config", DefaultConfigPath, "Configure File Path")
+	flag.StringVar(&splitListen, "split-listen", "", "Enable an in-process Claude split entry point on a loopback host:port")
+	flag.StringVar(&splitOfficialProxy, "split-official-proxy", "", "Dedicated loopback HTTP CONNECT proxy for official Claude requests")
 	flag.StringVar(&vertexImport, "vertex-import", "", "Import Vertex service account key JSON file")
 	flag.StringVar(&vertexImportPrefix, "vertex-import-prefix", "", "Prefix for Vertex model namespacing (use with -vertex-import)")
 	flag.StringVar(&password, "password", "", "")
@@ -490,6 +494,17 @@ func main() {
 	}
 	if cfg == nil {
 		cfg = &config.Config{}
+	}
+	if splitListen != "" || splitOfficialProxy != "" {
+		if cfg.SplitRelay == nil {
+			cfg.SplitRelay = &config.SplitRelayConfig{}
+		}
+		if splitListen != "" {
+			cfg.SplitRelay.Listen = splitListen
+		}
+		if splitOfficialProxy != "" {
+			cfg.SplitRelay.OfficialProxyURL = splitOfficialProxy
+		}
 	}
 
 	// In cloud deploy mode, check if we have a valid configuration

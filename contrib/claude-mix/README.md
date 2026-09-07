@@ -17,7 +17,11 @@ split-relay:
 
 The proxy port above is illustrative. Resolve it from the existing identity
 configuration. CLI flags `--split-listen` and `--split-official-proxy` override
-these listener settings at startup. API-key reload remains live; listener and
+these listener settings at startup. A comma-separated listen list can transfer
+existing session-bound addresses to the same handler and process; it does not
+create additional routing engines or provider pools. The launcher reads the
+optional `CLAUDE_MIX_RELAY_LISTEN` list from its existing configuration, allowing
+live sessions with frozen base URLs to retain their address when Node exits. API-key reload remains live; listener and
 identity proxy changes require a restart, just like the primary listener.
 
 `cli-proxy-api-claudex` is the local launchd entry point. It preserves the existing

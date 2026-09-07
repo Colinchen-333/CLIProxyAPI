@@ -102,7 +102,7 @@ func main() {
 	flag.BoolVar(&kimiLogin, "kimi-login", false, "Login to Kimi using OAuth")
 	flag.BoolVar(&xaiLogin, "xai-login", false, "Login to xAI using OAuth")
 	flag.StringVar(&configPath, "config", DefaultConfigPath, "Configure File Path")
-	flag.StringVar(&splitListen, "split-listen", "", "Enable an in-process Claude split entry point on a loopback host:port")
+	flag.StringVar(&splitListen, "split-listen", "", "Enable in-process Claude split entry points on comma-separated loopback host:port addresses")
 	flag.StringVar(&splitOfficialProxy, "split-official-proxy", "", "Dedicated loopback HTTP CONNECT proxy for official Claude requests")
 	flag.StringVar(&vertexImport, "vertex-import", "", "Import Vertex service account key JSON file")
 	flag.StringVar(&vertexImportPrefix, "vertex-import-prefix", "", "Prefix for Vertex model namespacing (use with -vertex-import)")

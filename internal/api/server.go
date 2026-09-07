@@ -1618,10 +1618,18 @@ func (s *Server) Start() error {
 func (s *Server) Stop(ctx context.Context) error {
 	log.Debug("Stopping API server...")
 	if split := s.split.Load(); split != nil {
-		if err := split.server.Shutdown(ctx); err != nil {
-			_ = split.server.Close()
-			log.Debugf("split relay shutdown: %v", err)
+		var stopped sync.WaitGroup
+		for _, server := range split.servers {
+			stopped.Add(1)
+			go func() {
+				defer stopped.Done()
+				if err := server.Shutdown(ctx); err != nil {
+					_ = server.Close()
+					log.Debugf("split relay shutdown: %v", err)
+				}
+			}()
 		}
+		stopped.Wait()
 	}
 
 	if s.keepAliveEnabled {

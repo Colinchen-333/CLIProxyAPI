@@ -41,7 +41,7 @@ func TestSplitListenerDispatchesInProcessAndReloadsKey(t *testing.T) {
 		c.Header("Content-Type", "text/event-stream")
 		c.String(200, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
 	})
-	cfg := &config.Config{SplitRelay: &config.SplitRelayConfig{Listen: "127.0.0.1:0", OfficialProxyURL: "http://127.0.0.1:1"}}
+	cfg := &config.Config{SplitRelay: &config.SplitRelayConfig{Listen: "127.0.0.1:0,127.0.0.1:0", OfficialProxyURL: "http://127.0.0.1:1"}}
 	cfg.APIKeys = []string{"test-key-one"}
 	s := &Server{engine: engine, cfg: cfg}
 	s.updateSplitAPIKey(cfg)
@@ -50,11 +50,11 @@ func TestSplitListenerDispatchesInProcessAndReloadsKey(t *testing.T) {
 	}
 	t.Cleanup(s.closeSplitRelay)
 	client := &http.Client{Timeout: 3 * time.Second}
-	for _, key := range []string{"test-key-one", "test-key-two"} {
+	for i, key := range []string{"test-key-one", "test-key-two"} {
 		cfgNext := *cfg
 		cfgNext.APIKeys = []string{key}
 		s.updateSplitAPIKey(&cfgNext)
-		req, err := http.NewRequest("POST", "http://"+s.split.Load().server.Addr+"/v1/messages", strings.NewReader(`{"model":"`+model+`","messages":[]}`))
+		req, err := http.NewRequest("POST", "http://"+s.split.Load().servers[i].Addr+"/v1/messages", strings.NewReader(`{"model":"`+model+`","messages":[]}`))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -77,7 +77,7 @@ func TestSplitListenerDispatchesInProcessAndReloadsKey(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	if err := s.split.Load().server.Shutdown(ctx); err != nil {
+	if err := s.split.Load().servers[0].Shutdown(ctx); err != nil {
 		t.Fatal(err)
 	}
 }

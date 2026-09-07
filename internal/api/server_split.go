@@ -14,7 +14,7 @@ import (
 )
 
 type splitRuntime struct {
-	server  *http.Server
+	servers []*http.Server
 	handler *splitrelay.Handler
 }
 
@@ -46,9 +46,18 @@ func (s *Server) startSplitRelay() (<-chan error, error) {
 		return nil, nil
 	}
 	cfg := *s.cfg.SplitRelay
-	addr, err := splitListenAddress(cfg.Listen)
-	if err != nil {
-		return nil, err
+	addresses := strings.Split(cfg.Listen, ",")
+	seen := make(map[string]bool)
+	for i, raw := range addresses {
+		addr, err := splitListenAddress(strings.TrimSpace(raw))
+		if err != nil {
+			return nil, err
+		}
+		if seen[addr] && !strings.HasSuffix(addr, ":0") {
+			return nil, errors.New("duplicate split relay listen address")
+		}
+		seen[addr] = true
+		addresses[i] = addr
 	}
 	key, _ := s.splitAPIKey.Load().(string)
 	if key == "" {
@@ -88,27 +97,42 @@ func (s *Server) startSplitRelay() (<-chan error, error) {
 	if err != nil {
 		return nil, fmt.Errorf("configure split relay: %w", err)
 	}
-	listener, err := net.Listen("tcp", addr)
-	if err != nil {
-		handler.CloseIdleConnections()
-		return nil, fmt.Errorf("listen split relay: %w", err)
-	}
-	runtime := &splitRuntime{server: &http.Server{Addr: listener.Addr().String(), Handler: handler}, handler: handler}
-	s.split.Store(runtime)
-	errorsCh := make(chan error, 1)
-	go func() {
-		err := runtime.server.Serve(listener)
-		if err != nil && !errors.Is(err, http.ErrServerClosed) {
-			errorsCh <- err
+	var listeners []net.Listener
+	for _, address := range addresses {
+		listener, err := net.Listen("tcp", address)
+		if err != nil {
+			for _, opened := range listeners {
+				_ = opened.Close()
+			}
+			handler.CloseIdleConnections()
+			return nil, fmt.Errorf("listen split relay: %w", err)
 		}
-	}()
-	log.Infof("split relay listening on %s (own providers dispatched in process)", listener.Addr())
+		listeners = append(listeners, listener)
+	}
+	runtime := &splitRuntime{handler: handler}
+	for _, listener := range listeners {
+		runtime.servers = append(runtime.servers, &http.Server{Addr: listener.Addr().String(), Handler: handler})
+	}
+	s.split.Store(runtime)
+	errorsCh := make(chan error, len(listeners))
+	for i, listener := range listeners {
+		server := runtime.servers[i]
+		go func() {
+			err := server.Serve(listener)
+			if err != nil && !errors.Is(err, http.ErrServerClosed) {
+				errorsCh <- err
+			}
+		}()
+		log.Infof("split relay listening on %s (own providers dispatched in process)", listener.Addr())
+	}
 	return errorsCh, nil
 }
 
 func (s *Server) closeSplitRelay() {
 	if split := s.split.Load(); split != nil {
-		_ = split.server.Close()
+		for _, server := range split.servers {
+			_ = server.Close()
+		}
 		split.handler.CloseIdleConnections()
 	}
 }

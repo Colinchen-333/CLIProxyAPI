@@ -14,5 +14,5 @@ exec env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY \
          -u http_proxy -u https_proxy -u all_proxy \
   "$HOME/.local/bin/cli-proxy-api" \
   --config "$HOME/.cli-proxy-api/config.yaml" --no-browser \
-  --split-listen "127.0.0.1:${CLAUDE_MIX_RELAY_PORT}" \
+  --split-listen "${CLAUDE_MIX_RELAY_LISTEN:-127.0.0.1:${CLAUDE_MIX_RELAY_PORT}}" \
   --split-official-proxy "http://127.0.0.1:${NETID_PORT}"

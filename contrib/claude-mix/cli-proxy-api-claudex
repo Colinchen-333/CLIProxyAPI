@@ -1,0 +1,19 @@
+#!/bin/zsh
+# One process owns both gateway and mixed-identity ingress. Resolve the official
+# identity from its existing authority; never duplicate its port or credentials.
+set -euo pipefail
+export PATH="/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+source "$HOME/.local/lib/claude-net/claude-mix.conf"
+source "$HOME/.local/lib/claude-net/claude-net.sh" >/dev/null 2>&1
+claude_identity 1 >/dev/null || {
+  print -u2 "CLIProxy: official identity slot 1 unavailable; refusing split startup"
+  exit 78
+}
+# Credential discovery is launchd-owned and never blocks gateway readiness.
+exec env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY \
+         -u http_proxy -u https_proxy -u all_proxy \
+  "$HOME/.local/bin/cli-proxy-api" \
+  --config "$HOME/.cli-proxy-api/config.yaml" --no-browser \
+  --split-listen "${CLAUDE_MIX_RELAY_LISTEN:-127.0.0.1:${CLAUDE_MIX_RELAY_PORT}}" \
+  --split-official-proxy "http://127.0.0.1:${NETID_PORT}" \
+  --split-official-relay "http://127.0.0.1:${CLAUDE_OFFICIAL_TRANSPORT_PORT:-8319}"

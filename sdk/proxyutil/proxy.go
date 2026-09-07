@@ -111,8 +111,8 @@ func BuildHTTPTransport(raw string) (*http.Transport, Mode, error) {
 			}
 			transport := cloneDefaultTransport()
 			transport.Proxy = nil
-			transport.DialContext = func(_ context.Context, network, addr string) (net.Conn, error) {
-				return dialer.Dial(network, addr)
+			transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+				return dialer.(proxy.ContextDialer).DialContext(ctx, network, addr)
 			}
 			return transport, setting.Mode, nil
 		}
@@ -156,15 +156,29 @@ type httpConnectDialer struct {
 }
 
 func (d *httpConnectDialer) Dial(network, addr string) (net.Conn, error) {
-	proxyConn, errDial := d.dialer.Dial(network, proxyDialAddr(d.proxyURL))
+	return d.DialContext(context.Background(), network, addr)
+}
+
+func (d *httpConnectDialer) DialContext(ctx context.Context, network, addr string) (result net.Conn, err error) {
+	proxyConn, errDial := d.dialer.(proxy.ContextDialer).DialContext(ctx, network, proxyDialAddr(d.proxyURL))
 	if errDial != nil {
 		return nil, fmt.Errorf("dial HTTP proxy failed: %w", errDial)
 	}
 
+	// Cancellation owns this connection only during tunnel establishment.
+	cancelled := make(chan struct{})
+	stop := context.AfterFunc(ctx, func() { _ = proxyConn.Close(); close(cancelled) })
+	defer func() {
+		if !stop() {
+			<-cancelled
+			result = nil
+			err = ctx.Err()
+		}
+	}()
 	conn := proxyConn
 	if d.proxyURL.Scheme == "https" {
 		tlsConn := tls.Client(conn, &tls.Config{ServerName: d.proxyURL.Hostname()})
-		if errHandshake := tlsConn.Handshake(); errHandshake != nil {
+		if errHandshake := tlsConn.HandshakeContext(ctx); errHandshake != nil {
 			if errClose := conn.Close(); errClose != nil {
 				return nil, fmt.Errorf("HTTPS proxy TLS handshake failed: %w; close failed: %v", errHandshake, errClose)
 			}

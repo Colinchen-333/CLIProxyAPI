@@ -35,6 +35,9 @@ type Config struct {
 	// Port is the network port on which the API server will listen.
 	Port int `yaml:"port" json:"-"`
 
+	// SplitRelay optionally exposes a loopback Claude/own-provider entry point.
+	SplitRelay *SplitRelayConfig `yaml:"split-relay,omitempty" json:"split-relay,omitempty"`
+
 	// TLS config controls HTTPS server settings.
 	TLS TLSConfig `yaml:"tls" json:"tls"`
 

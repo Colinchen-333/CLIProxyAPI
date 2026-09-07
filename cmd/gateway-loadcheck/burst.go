@@ -12,12 +12,16 @@ import (
 )
 
 type burstOptions struct {
+	CPUProfile                              string
 	VerifySessionCache                      bool
 	Mode                                    string
 	ContextBytes, Tools, Count, Concurrency int
 }
 
 func (o burstOptions) validate() error {
+	if o.CPUProfile != "" && o.Mode != "burst" {
+		return fmt.Errorf("cpu-profile requires burst mode")
+	}
 	if o.Mode != "blocked" && o.Mode != "burst" {
 		return fmt.Errorf("mode must be blocked or burst")
 	}

@@ -58,6 +58,7 @@ func main() {
 	flag.IntVar(&opts.Count, "burst-requests", 32, "total burst requests")
 	flag.IntVar(&opts.Concurrency, "burst-concurrency", 8, "maximum simultaneous burst requests (max 64)")
 	flag.BoolVar(&opts.VerifySessionCache, "verify-session-cache", false, "require stable Responses prompt_cache_key per synthetic client")
+	flag.StringVar(&opts.CPUProfile, "cpu-profile", "", "save a five-second CPU profile from the isolated fake gateway")
 	flag.Parse()
 	started := time.Now()
 	r := result{Requested: *concurrency, Mode: opts.Mode}
@@ -87,7 +88,7 @@ func main() {
 	}
 }
 
-func run(ctx context.Context, binary string, concurrency int, opts burstOptions, out *result) error {
+func run(ctx context.Context, binary string, concurrency int, opts burstOptions, out *result) (runErr error) {
 	binary, err := filepath.Abs(binary)
 	if err != nil {
 		return err
@@ -194,6 +195,14 @@ codex-api-key:
       - name: bench-fast
       - name: bench-slow
 `, apiPort, filepath.Join(temp, "auths"), splitAddr, upstream.URL+"/v1")
+	profileAddr := ""
+	if opts.CPUProfile != "" {
+		profileAddr, err = freeAddress()
+		if err != nil {
+			return err
+		}
+		config += fmt.Sprintf("\npprof:\n  enable: true\n  addr: %q\n", profileAddr)
+	}
 	configPath := filepath.Join(temp, "config.yaml")
 	if err := os.WriteFile(configPath, []byte(config), 0600); err != nil {
 		return err
@@ -241,6 +250,20 @@ codex-api-key:
 		return fmt.Errorf("gateway startup: %w; %s", err, logBytes)
 	}
 	if opts.Mode == "burst" {
+		if opts.CPUProfile != "" {
+			finish, err := startCPUProfile(ctx, profileAddr, opts.CPUProfile)
+			if err != nil {
+				return err
+			}
+			defer func() {
+				if err := finish(); err != nil && runErr == nil {
+					runErr = err
+				}
+			}()
+			bounded, cancel := context.WithTimeout(ctx, 5*time.Second)
+			defer cancel()
+			ctx = bounded
+		}
 		out.Burst = probe.run(ctx, client, endpoint)
 		out.Errors += out.Burst.Errors
 		return nil

@@ -1617,6 +1617,8 @@ func (s *Server) Start() error {
 //   - error: An error if the server fails to stop
 func (s *Server) Stop(ctx context.Context) error {
 	log.Debug("Stopping API server...")
+	var splitShutdownErr error
+	var splitErrorsMu sync.Mutex
 	if split := s.split.Load(); split != nil {
 		var stopped sync.WaitGroup
 		for _, server := range split.servers {
@@ -1625,7 +1627,9 @@ func (s *Server) Stop(ctx context.Context) error {
 				defer stopped.Done()
 				if err := server.Shutdown(ctx); err != nil {
 					_ = server.Close()
-					log.Debugf("split relay shutdown: %v", err)
+					splitErrorsMu.Lock()
+					splitShutdownErr = errors.Join(splitShutdownErr, err)
+					splitErrorsMu.Unlock()
 				}
 			}()
 		}
@@ -1650,11 +1654,11 @@ func (s *Server) Stop(ctx context.Context) error {
 
 	// Shutdown the HTTP server.
 	if err := s.server.Shutdown(ctx); err != nil {
-		return fmt.Errorf("failed to shutdown HTTP server: %v", err)
+		return errors.Join(fmt.Errorf("failed to shutdown HTTP server: %v", err), splitShutdownErr)
 	}
 
 	log.Debug("API server stopped")
-	return nil
+	return splitShutdownErr
 }
 
 // corsMiddleware returns a Gin middleware handler that adds CORS headers

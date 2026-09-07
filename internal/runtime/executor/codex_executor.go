@@ -1035,6 +1035,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		return e.executeOpenAIImageStream(ctx, auth, req, opts)
 	}
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
+	timing := helps.NewStreamTiming(ctx, baseModel, len(req.Payload))
 
 	apiKey, baseURL := codexCreds(auth)
 	if baseURL == "" {
@@ -1062,11 +1063,10 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	requestPath := helps.PayloadRequestPath(opts)
 	body = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", body, originalTranslated, requestedModel, requestPath, opts.Headers)
-	body, _ = sjson.DeleteBytes(body, "previous_response_id")
-	body, _ = sjson.DeleteBytes(body, "prompt_cache_retention")
-	body, _ = sjson.DeleteBytes(body, "safety_identifier")
-	body, _ = sjson.DeleteBytes(body, "stream_options")
-	body, _ = sjson.SetBytes(body, "model", baseModel)
+	body = helps.DeleteJSONFieldsIfPresent(body, "previous_response_id", "prompt_cache_retention", "safety_identifier", "stream_options")
+	if current := gjson.GetBytes(body, "model"); current.Type != gjson.String || current.String() != baseModel {
+		body, _ = sjson.SetBytes(body, "model", baseModel)
+	}
 	body = normalizeCodexInstructions(body)
 	if e.cfg == nil || e.cfg.DisableImageGeneration == config.DisableImageGenerationOff {
 		body = ensureImageGenerationTool(body, baseModel, auth, opts.Headers)
@@ -1108,7 +1108,13 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 
 	httpClient := helps.NewUtlsHTTPClient(ctx, e.cfg, auth, 0)
 	httpClient = reporter.TrackHTTPClient(httpClient)
+	timing.Prepared(len(upstreamBody), gjson.GetBytes(upstreamBody, "prompt_cache_key").String() != "")
 	httpResp, err := httpClient.Do(httpReq)
+	responseStatus := 0
+	if httpResp != nil {
+		responseStatus = httpResp.StatusCode
+	}
+	timing.Response(responseStatus, err != nil)
 	if err != nil {
 		helps.RecordAPIResponseError(ctx, e.cfg, err)
 		return nil, err
@@ -1663,6 +1669,7 @@ func applyCodexHeadersFromSources(r *http.Request, auth *cliproxyauth.Auth, toke
 		attrs = auth.Attributes
 	}
 	util.ApplyCustomHeadersFromAttrs(r, attrs)
+	helps.ApplyOpenCodeSessionHeader(r)
 }
 
 func newCodexStatusErr(statusCode int, body []byte) statusErr {

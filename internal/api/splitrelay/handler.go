@@ -19,6 +19,7 @@ import (
 
 	"github.com/andybalholm/brotli"
 	"github.com/google/uuid"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/requestmeta"
 )
 
 type Event struct {
@@ -255,6 +256,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		cloned.Header = make(http.Header)
 		cloned.Header.Set("Authorization", "Bearer "+key)
 		cloned.Header.Set("Content-Type", "application/json")
+		if session := ownSession(r.Header, parsed, key); session != "" {
+			cloned = cloned.WithContext(requestmeta.WithOwnSession(cloned.Context(), session))
+			cloned.Header.Set("X-Session-ID", session)
+		}
 		version := r.Header.Get("Anthropic-Version")
 		if version == "" {
 			version = "2023-06-01"

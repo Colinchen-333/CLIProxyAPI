@@ -9,6 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/requestmeta"
 	"github.com/tidwall/gjson"
 )
 
@@ -52,6 +53,17 @@ func extractClaudeCodeSessionIDFromPayload(payload []byte) string {
 
 // ClaudeCodePromptCache maps a Claude Code session to a stable upstream prompt_cache_key.
 func ClaudeCodePromptCache(ctx context.Context, modelName string, payload []byte, headers http.Header) (CodexCache, bool, error) {
+	session := requestmeta.OwnSession(ctx)
+	if session == "" && ctx != nil {
+		if ginCtx, ok := ctx.Value("gin").(*gin.Context); ok && ginCtx != nil && ginCtx.Request != nil {
+			session = requestmeta.OwnSession(ginCtx.Request.Context())
+		}
+	}
+	if session != "" {
+		// Stable on concurrent cold starts and restarts; isolated by model and ingress key.
+		id := uuid.NewSHA1(uuid.NameSpaceOID, []byte("cliproxy:own-cache:v1:"+modelName+":"+session)).String()
+		return CodexCache{ID: id}, true, nil
+	}
 	sessionID := ExtractClaudeCodeSessionID(ctx, payload, headers)
 	if sessionID == "" {
 		return CodexCache{}, false, nil

@@ -26,37 +26,48 @@ import (
 )
 
 type result struct {
-	BinarySHA256      string  `json:"gateway_binary_sha256"`
-	Success           bool    `json:"success"`
-	Requested         int     `json:"requested_slow_concurrency"`
-	Arrived           int64   `json:"arrived_slow_requests"`
-	Peak              int64   `json:"peak_slow_active"`
-	ActiveDuringFast  int64   `json:"slow_active_during_fast"`
-	ActiveAfterCancel int64   `json:"slow_active_after_cancel"`
-	FastCount         int     `json:"fast_successes"`
-	P50               float64 `json:"first_real_text_p50_ms"`
-	P95               float64 `json:"first_real_text_p95_ms"`
-	P99               float64 `json:"first_real_text_p99_ms"`
-	RecoveryMS        float64 `json:"recovery_first_real_text_ms"`
-	Errors            int     `json:"errors"`
-	SlowErrors        int     `json:"slow_request_errors"`
-	FirstSlowError    string  `json:"first_slow_request_error,omitempty"`
-	Failure           string  `json:"failure,omitempty"`
-	ElapsedMS         float64 `json:"elapsed_ms"`
+	Mode              string       `json:"mode"`
+	Burst             *burstResult `json:"burst,omitempty"`
+	BinarySHA256      string       `json:"gateway_binary_sha256"`
+	Success           bool         `json:"success"`
+	Requested         int          `json:"requested_slow_concurrency"`
+	Arrived           int64        `json:"arrived_slow_requests"`
+	Peak              int64        `json:"peak_slow_active"`
+	ActiveDuringFast  int64        `json:"slow_active_during_fast"`
+	ActiveAfterCancel int64        `json:"slow_active_after_cancel"`
+	FastCount         int          `json:"fast_successes"`
+	P50               float64      `json:"first_real_text_p50_ms"`
+	P95               float64      `json:"first_real_text_p95_ms"`
+	P99               float64      `json:"first_real_text_p99_ms"`
+	RecoveryMS        float64      `json:"recovery_first_real_text_ms"`
+	Errors            int          `json:"errors"`
+	SlowErrors        int          `json:"slow_request_errors"`
+	FirstSlowError    string       `json:"first_slow_request_error,omitempty"`
+	Failure           string       `json:"failure,omitempty"`
+	ElapsedMS         float64      `json:"elapsed_ms"`
 }
 
 func main() {
 	binary := flag.String("gateway-binary", "", "path to the actual compiled gateway server")
 	concurrency := flag.Int("concurrency", 1000, "number of simultaneous blocked slow model requests")
 	timeout := flag.Duration("timeout", 90*time.Second, "overall acceptance deadline")
+	opts := burstOptions{}
+	flag.StringVar(&opts.Mode, "mode", "blocked", "blocked or burst")
+	flag.IntVar(&opts.ContextBytes, "context-bytes", 0, "synthetic context bytes per burst request (max 2097152)")
+	flag.IntVar(&opts.Tools, "tools", 0, "synthetic tool definitions per burst request (max 256)")
+	flag.IntVar(&opts.Count, "burst-requests", 32, "total burst requests")
+	flag.IntVar(&opts.Concurrency, "burst-concurrency", 8, "maximum simultaneous burst requests (max 64)")
+	flag.BoolVar(&opts.VerifySessionCache, "verify-session-cache", false, "require stable Responses prompt_cache_key per synthetic client")
 	flag.Parse()
 	started := time.Now()
-	r := result{Requested: *concurrency}
+	r := result{Requested: *concurrency, Mode: opts.Mode}
 	if *binary == "" || *concurrency < 1 {
 		r.Failure = "gateway-binary and positive concurrency are required"
+	} else if err := opts.validate(); err != nil {
+		r.Failure = err.Error()
 	} else {
 		ctx, cancel := context.WithTimeout(context.Background(), *timeout)
-		err := run(ctx, *binary, *concurrency, &r)
+		err := run(ctx, *binary, *concurrency, opts, &r)
 		cancel()
 		if err != nil {
 			r.Failure = err.Error()
@@ -66,6 +77,9 @@ func main() {
 		r.Errors++
 	}
 	r.Success = r.Errors == 0 && r.FastCount == 32 && r.ActiveAfterCancel == 0
+	if opts.Mode == "burst" {
+		r.Success = r.Errors == 0 && r.Burst != nil && r.Burst.Successes == opts.Count && r.Burst.Verified == opts.Count
+	}
 	r.ElapsedMS = ms(time.Since(started))
 	_ = json.NewEncoder(os.Stdout).Encode(r)
 	if !r.Success {
@@ -73,7 +87,7 @@ func main() {
 	}
 }
 
-func run(ctx context.Context, binary string, concurrency int, out *result) error {
+func run(ctx context.Context, binary string, concurrency int, opts burstOptions, out *result) error {
 	binary, err := filepath.Abs(binary)
 	if err != nil {
 		return err
@@ -97,6 +111,7 @@ func run(ctx context.Context, binary string, concurrency int, out *result) error
 	if err := os.Mkdir(filepath.Join(temp, "auths"), 0700); err != nil {
 		return err
 	}
+	probe := newBurstProbe(opts)
 	var active, arrived, peak atomic.Int64
 	defer func() { out.Arrived = arrived.Load(); out.Peak = peak.Load(); out.ActiveAfterCancel = active.Load() }()
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
@@ -104,14 +119,13 @@ func run(ctx context.Context, binary string, concurrency int, out *result) error
 			http.Error(w, "unexpected provider path", 404)
 			return
 		}
-		var body struct {
-			Model string `json:"model"`
-		}
+		var body map[string]any
+		arrival := time.Now()
 		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
 			http.Error(w, "bad request", 400)
 			return
 		}
-		if body.Model == "bench-slow" {
+		if body["model"] == "bench-slow" {
 			now := active.Add(1)
 			arrived.Add(1)
 			for previous := peak.Load(); now > previous; previous = peak.Load() {
@@ -123,9 +137,15 @@ func run(ctx context.Context, binary string, concurrency int, out *result) error
 			<-req.Context().Done()
 			return
 		}
-		if body.Model != "bench-fast" {
+		if body["model"] != "bench-fast" {
 			http.Error(w, "unexpected model", 400)
 			return
+		}
+		if opts.Mode == "burst" {
+			if err := probe.observe(body, arrival); err != nil {
+				http.Error(w, err.Error(), 400)
+				return
+			}
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		events := []string{
@@ -220,6 +240,11 @@ codex-api-key:
 		}
 		return fmt.Errorf("gateway startup: %w; %s", err, logBytes)
 	}
+	if opts.Mode == "burst" {
+		out.Burst = probe.run(ctx, client, endpoint)
+		out.Errors += out.Burst.Errors
+		return nil
+	}
 	// A real translated warmup validates model registration before measuring load.
 	if _, err := firstText(ctx, client, endpoint, "bench-fast"); err != nil {
 		return fmt.Errorf("warmup: %w", err)
@@ -295,6 +320,10 @@ codex-api-key:
 
 func firstText(ctx context.Context, client *http.Client, endpoint, model string) (time.Duration, error) {
 	body, _ := json.Marshal(map[string]any{"model": model, "max_tokens": 16, "stream": true, "messages": []map[string]string{{"role": "user", "content": "Return bench-ok"}}})
+	return firstTextBody(ctx, client, endpoint, body)
+}
+
+func firstTextBody(ctx context.Context, client *http.Client, endpoint string, body []byte) (time.Duration, error) {
 	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(body))
 	if err != nil {
 		return 0, err

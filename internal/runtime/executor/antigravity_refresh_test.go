@@ -33,12 +33,11 @@ func useAntigravityRefreshTestTransport(t *testing.T, targetHost string) {
 		TLSClientConfig:   &tls.Config{InsecureSkipVerify: true},
 		ForceAttemptHTTP2: false,
 	}
-	antigravityTransport = transport
-	antigravityTransportOnce = sync.Once{}
-	antigravityTransportOnce.Do(func() {})
+	original := http.DefaultTransport
+	http.DefaultTransport = transport
 	t.Cleanup(func() {
-		antigravityTransport = nil
-		antigravityTransportOnce = sync.Once{}
+		http.DefaultTransport = original
+		transport.CloseIdleConnections()
 	})
 }
 

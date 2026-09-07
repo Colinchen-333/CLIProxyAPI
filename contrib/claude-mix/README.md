@@ -29,7 +29,7 @@ live sessions with frozen base URLs to retain their address when Node exits. API
 identity proxy changes require a restart, just like the primary listener.
 
 `cli-proxy-api-claudex` is the local launchd entry point. It preserves the existing
-identity-slot validation, requests asynchronous credential synchronization, resolves
+identity-slot validation, resolves
 ports from existing configuration, and clears implicit proxy environment before
 starting the single process. It contains no credentials.
 
@@ -63,7 +63,8 @@ This is not a claim of unlimited upstream quota or inference capacity.
 Validation:
 
 ```sh
-go test -race ./internal/api/splitrelay ./internal/api -run 'TestSplit|TestHandler'
+go test -race ./internal/api/splitrelay
+go test -race ./internal/api -run TestSplit
 go test ./...
 go build -o artifacts/cli-proxy-api ./cmd/server
 ```

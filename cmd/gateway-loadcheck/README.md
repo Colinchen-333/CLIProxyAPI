@@ -12,6 +12,6 @@ The route is the real split listener, API authentication and model registry, Cla
 
 The check waits until every slow request has reached the provider and is blocked there. It then submits 32 fast requests without releasing the slow requests. Latency measures the first actual `bench-ok` text delta, not response headers or keepalives. After cancelling all slow requests it requires provider activity to return to zero and a recovery request to succeed.
 
-Output is one JSON result with the tested binary SHA-256, observed concurrency, real-text latency percentiles, error count, recovery, and elapsed time. Any failed acceptance condition exits nonzero. The default 90-second harness deadline can be changed with `--timeout`; it does not modify production timeouts. Linux and macOS cleanup targets only the process group created by the check.
+Output is one JSON result with the tested binary SHA-256, observed concurrency, real-text latency percentiles, error count, recovery, and elapsed time. `slow_request_errors` counts failed slow requests even when the slow barrier fails; `first_slow_request_error` retains the first actual request error when one occurs. Any failed acceptance condition exits nonzero. The default 90-second harness deadline can be changed with `--timeout`; it does not modify production timeouts. Linux and macOS cleanup targets only the process group created by the check.
 
 This proves local gateway concurrency and cancellation behavior. It does not measure real provider queueing, inference, or network latency.

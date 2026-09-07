@@ -39,6 +39,8 @@ type result struct {
 	P99               float64 `json:"first_real_text_p99_ms"`
 	RecoveryMS        float64 `json:"recovery_first_real_text_ms"`
 	Errors            int     `json:"errors"`
+	SlowErrors        int     `json:"slow_request_errors"`
+	FirstSlowError    string  `json:"first_slow_request_error,omitempty"`
 	Failure           string  `json:"failure,omitempty"`
 	ElapsedMS         float64 `json:"elapsed_ms"`
 }
@@ -226,6 +228,8 @@ codex-api-key:
 	defer cancelSlow()
 	var slowWG sync.WaitGroup
 	var slowErrors atomic.Int64
+	var firstSlowError string
+	var firstSlowErrorOnce sync.Once
 	for range concurrency {
 		slowWG.Add(1)
 		go func() {
@@ -233,10 +237,17 @@ codex-api-key:
 			_, err := firstText(slowCtx, client, endpoint, "bench-slow")
 			if slowCtx.Err() == nil && err != nil {
 				slowErrors.Add(1)
+				firstSlowErrorOnce.Do(func() { firstSlowError = err.Error() })
 			}
 		}()
 	}
-	defer func() { cancelSlow(); slowWG.Wait() }()
+	defer func() {
+		cancelSlow()
+		slowWG.Wait()
+		out.SlowErrors = int(slowErrors.Load())
+		out.Errors += out.SlowErrors
+		out.FirstSlowError = firstSlowError
+	}()
 	if err := waitFor(ctx, 45*time.Second, func() bool { return active.Load() == int64(concurrency) }); err != nil {
 		return fmt.Errorf("slow barrier: active=%d arrived=%d errors=%d: %w", active.Load(), arrived.Load(), slowErrors.Load(), err)
 	}
@@ -271,7 +282,6 @@ codex-api-key:
 	}
 	cancelSlow()
 	slowWG.Wait()
-	out.Errors += int(slowErrors.Load())
 	if err := waitFor(ctx, 10*time.Second, func() bool { return active.Load() == 0 }); err != nil {
 		return fmt.Errorf("canceled upstream requests stayed active: %d", active.Load())
 	}

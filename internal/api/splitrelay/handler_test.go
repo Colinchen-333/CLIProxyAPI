@@ -282,3 +282,71 @@ func TestManagementPathsCannotReachOwnHandler(t *testing.T) {
 		t.Errorf("unexpected status %d", w.Code)
 	}
 }
+
+func TestLocalOfficialConnectorPreservesRequestWithoutProxyEnvironment(t *testing.T) {
+	t.Setenv("HTTP_PROXY", "http://127.0.0.1:1")
+	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:1")
+	payload := []byte(`{"model":"claude-local-fixture","metadata":{"user_id":"fixture"}}`)
+	var calls atomic.Int64
+	connector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		body, _ := io.ReadAll(r.Body)
+		if !bytes.Equal(body, payload) || r.Header.Get("Authorization") != "Bearer fixture" || r.Header.Get("Cookie") != "fixture-cookie" || r.Header.Get("User-Agent") != "fixture-agent" {
+			t.Error("local connector request changed")
+		}
+		if r.Header.Get("X-Forwarded-For") != "" || r.Header.Get("Forwarded") != "" || r.Header.Get("X-Forwarded-Host") != "" || r.Header.Get("X-Forwarded-Proto") != "" {
+			t.Error("new proxy identity fields")
+		}
+		io.WriteString(w, "connector")
+	}))
+	defer connector.Close()
+	h, err := New(Options{OwnHandler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "own") }), OwnsModel: func(s string) bool { return s == "own" }, GatewayKey: func() string { return "key" }, OfficialRelayURL: connector.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.CloseIdleConnections()
+	r := httptest.NewRequest("POST", "/v1/messages", bytes.NewReader(payload))
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("Authorization", "Bearer fixture")
+	r.Header.Set("Cookie", "fixture-cookie")
+	r.Header.Set("User-Agent", "fixture-agent")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Body.String() != "connector" {
+		t.Fatal(w.Body.String())
+	}
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, request("own"))
+	if w.Body.String() != "own" || calls.Load() != 1 {
+		t.Fatal("own request reached connector")
+	}
+	if h.transport.Proxy != nil {
+		t.Fatal("connector inherited proxy environment")
+	}
+}
+
+func TestLocalOfficialConnectorFailureHasNoFallback(t *testing.T) {
+	var direct atomic.Int64
+	target := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { direct.Add(1) }))
+	defer target.Close()
+	connector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	connectorURL := connector.URL
+	connector.Close()
+	options := Options{OwnHandler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { t.Error("official reached own") }), OwnsModel: func(string) bool { return false }, GatewayKey: func() string { return "key" }, OfficialRelayURL: connectorURL, OfficialURL: target.URL, OfficialProxyURL: "http://127.0.0.1:1"}
+	h, err := New(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.CloseIdleConnections()
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, request("claude-local-fixture"))
+	if w.Code != 502 || direct.Load() != 0 {
+		t.Fatalf("status=%d direct=%d", w.Code, direct.Load())
+	}
+	for _, bad := range []string{"http://localhost:1234", "http://example.com:1234", "https://127.0.0.1:1234", "http://127.0.0.1", "http://127.0.0.1:1234/path", "http://127.0.0.1:1234?target=other", "http://user@127.0.0.1:1234"} {
+		options.OfficialRelayURL = bad
+		if _, err := New(options); err == nil {
+			t.Errorf("accepted %s", bad)
+		}
+	}
+}

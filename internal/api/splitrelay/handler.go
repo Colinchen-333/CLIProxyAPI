@@ -39,6 +39,7 @@ type Options struct {
 	OwnsModel        func(string) bool
 	GatewayKey       func() string
 	OfficialProxyURL string
+	OfficialRelayURL string
 	OfficialURL      string
 	MaxRequestBytes  int64
 	Observe          func(Event)
@@ -64,22 +65,34 @@ func New(options Options) (*Handler, error) {
 	if options.OwnHandler == nil || options.OwnsModel == nil || options.GatewayKey == nil {
 		return nil, fmt.Errorf("own handler, model registry and gateway key are required")
 	}
-	proxy, err := url.Parse(options.OfficialProxyURL)
-	if err != nil || proxy.Scheme != "http" || !loopback(proxy.Hostname()) || proxy.Port() == "" || proxy.User != nil || proxy.RawQuery != "" || (proxy.Path != "" && proxy.Path != "/") {
-		return nil, fmt.Errorf("official proxy must be an HTTP loopback proxy with an explicit port")
-	}
-	if options.OfficialURL == "" {
-		options.OfficialURL = "https://api.anthropic.com"
-	}
-	target, err := url.Parse(options.OfficialURL)
-	if err != nil || target.Scheme != "https" || target.Hostname() == "" || target.User != nil {
-		return nil, fmt.Errorf("official target must be HTTPS")
+	var target, proxy *url.URL
+	var err error
+	if options.OfficialRelayURL != "" {
+		target, err = url.Parse(options.OfficialRelayURL)
+		if err != nil || target.Scheme != "http" || net.ParseIP(target.Hostname()) == nil || !loopback(target.Hostname()) || target.Port() == "" || target.User != nil || target.RawQuery != "" || target.Fragment != "" || (target.Path != "" && target.Path != "/") {
+			return nil, fmt.Errorf("official relay must be HTTP on a literal loopback address with an explicit port")
+		}
+	} else {
+		proxy, err = url.Parse(options.OfficialProxyURL)
+		if err != nil || proxy.Scheme != "http" || !loopback(proxy.Hostname()) || proxy.Port() == "" || proxy.User != nil || proxy.RawQuery != "" || (proxy.Path != "" && proxy.Path != "/") {
+			return nil, fmt.Errorf("official proxy must be an HTTP loopback proxy with an explicit port")
+		}
+		if options.OfficialURL == "" {
+			options.OfficialURL = "https://api.anthropic.com"
+		}
+		target, err = url.Parse(options.OfficialURL)
+		if err != nil || target.Scheme != "https" || target.Hostname() == "" || target.User != nil {
+			return nil, fmt.Errorf("official target must be HTTPS")
+		}
 	}
 	if options.MaxRequestBytes <= 0 {
 		options.MaxRequestBytes = 64 << 20
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.Proxy = http.ProxyURL(proxy)
+	transport.Proxy = nil
+	if proxy != nil {
+		transport.Proxy = http.ProxyURL(proxy)
+	}
 	transport.MaxIdleConns = 1024
 	transport.MaxIdleConnsPerHost = 1024
 	transport.MaxConnsPerHost = 0

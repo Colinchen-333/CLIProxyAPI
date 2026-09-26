@@ -276,7 +276,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-var ownFields = map[string]bool{"model": true, "messages": true, "system": true, "max_tokens": true, "temperature": true, "top_p": true, "top_k": true, "stop_sequences": true, "stream": true, "tools": true, "tool_choice": true, "thinking": true, "output_config": true}
+var ownFields = map[string]bool{"model": true, "messages": true, "system": true, "max_tokens": true, "temperature": true, "top_p": true, "top_k": true, "stop_sequences": true, "stream": true, "tools": true, "tool_choice": true, "thinking": true, "output_config": true, "service_tier": true}
 
 // Unwrap lets ResponseController reach the original server writer. Flush keeps
 // Gin and streaming handlers compatible without buffering response bytes.

@@ -359,6 +359,10 @@ func normalizeObjectSchemaProperties(schema any) any {
 			}
 		}
 		for key, child := range value {
+			if pattern, ok := child.(string); ok && key == "pattern" {
+				value[key] = portableRegexPattern(pattern)
+				continue
+			}
 			value[key] = normalizeObjectSchemaProperties(child)
 		}
 		return value
@@ -370,6 +374,34 @@ func normalizeObjectSchemaProperties(schema any) any {
 	default:
 		return schema
 	}
+}
+
+// portableRegexPattern rewrites the ECMAScript NUL escape \0 as \x00. Claude Code
+// emits patterns such as ^[^\0]*$ from JavaScript regex literals, and OpenAI-style
+// schema validators (OpenCode Go among them) reject \0 as "not a regex", failing
+// every request that carries the tool. \x00 means the same thing in both dialects.
+// An escaped backslash (\\0) and an octal-looking \0 followed by a digit are left alone.
+func portableRegexPattern(pattern string) string {
+	if !strings.Contains(pattern, `\0`) {
+		return pattern
+	}
+	var b strings.Builder
+	b.Grow(len(pattern) + 8)
+	for i := 0; i < len(pattern); i++ {
+		if pattern[i] != '\\' || i+1 >= len(pattern) {
+			b.WriteByte(pattern[i])
+			continue
+		}
+		next := pattern[i+1]
+		if next == '0' && (i+2 >= len(pattern) || pattern[i+2] < '0' || pattern[i+2] > '9') {
+			b.WriteString(`\x00`)
+		} else {
+			b.WriteByte('\\')
+			b.WriteByte(next)
+		}
+		i++
+	}
+	return b.String()
 }
 
 func shouldMapClaudeThinkingToGPTReasoning(part gjson.Result) bool {

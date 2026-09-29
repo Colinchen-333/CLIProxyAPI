@@ -181,7 +181,7 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 		b, _ := io.ReadAll(httpResp.Body)
 		helps.AppendAPIResponseChunk(ctx, e.cfg, b)
 		helps.LogWithRequestID(ctx).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), b))
-		err = statusErr{code: upstreamErrorStatus(httpResp.StatusCode, b), msg: string(b)}
+		err = statusErr{code: surfacedUpstreamStatus(ctx, httpResp.StatusCode, b), msg: string(b)}
 		return resp, err
 	}
 	body, err := io.ReadAll(httpResp.Body)
@@ -279,7 +279,7 @@ func (e *OpenAICompatExecutor) executeImages(ctx context.Context, auth *cliproxy
 
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
 		helps.LogWithRequestID(ctx).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), body))
-		err = statusErr{code: upstreamErrorStatus(httpResp.StatusCode, body), msg: string(body)}
+		err = statusErr{code: surfacedUpstreamStatus(ctx, httpResp.StatusCode, body), msg: string(body)}
 		return resp, err
 	}
 
@@ -380,7 +380,7 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 		if errClose := httpResp.Body.Close(); errClose != nil {
 			log.Errorf("openai compat executor: close response body error: %v", errClose)
 		}
-		err = statusErr{code: upstreamErrorStatus(httpResp.StatusCode, b), msg: string(b)}
+		err = statusErr{code: surfacedUpstreamStatus(ctx, httpResp.StatusCode, b), msg: string(b)}
 		return nil, err
 	}
 	out := make(chan cliproxyexecutor.StreamChunk)
@@ -537,7 +537,7 @@ func (e *OpenAICompatExecutor) executeImagesStream(ctx context.Context, auth *cl
 		}
 		helps.AppendAPIResponseChunk(ctx, e.cfg, body)
 		helps.LogWithRequestID(ctx).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), body))
-		return nil, statusErr{code: upstreamErrorStatus(httpResp.StatusCode, body), msg: string(body)}
+		return nil, statusErr{code: surfacedUpstreamStatus(ctx, httpResp.StatusCode, body), msg: string(body)}
 	}
 
 	out := make(chan cliproxyexecutor.StreamChunk)
@@ -789,6 +789,18 @@ func (e *OpenAICompatExecutor) overrideModel(payload []byte, model string) []byt
 // {"model":"deepseek-v4.1-flash"} has told us nothing about the request, and the
 // identical request succeeds on replay. Reporting it as 400 stops failover and
 // makes clients abandon the conversation, so it is surfaced as 502 instead.
+// surfacedUpstreamStatus applies upstreamErrorStatus and logs every remap at warn
+// level with the upstream's own status and body. The remap hides the upstream
+// status from clients, so without this line an empty-bodied 400 is
+// indistinguishable from a real gateway failure unless debug logging is on.
+func surfacedUpstreamStatus(ctx context.Context, status int, body []byte) int {
+	code := upstreamErrorStatus(status, body)
+	if code != status {
+		helps.LogWithRequestID(ctx).Warnf("openai compat: upstream %d with undescribed body (%d bytes: %q) surfaced as %d", status, len(body), helps.SummarizeErrorBody("", body), code)
+	}
+	return code
+}
+
 func upstreamErrorStatus(status int, body []byte) int {
 	if status != http.StatusBadRequest || describesRequestError(body) {
 		return status

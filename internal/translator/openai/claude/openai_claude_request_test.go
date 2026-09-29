@@ -869,3 +869,46 @@ func TestConvertClaudeRequestToOpenAI_StripsClaudeCodeAttribution(t *testing.T) 
 		t.Fatalf("Unexpected system content: %q", got)
 	}
 }
+
+// Claude Code's Artifact tool ships file_paths items with pattern ^[^\0]*$
+// (a JavaScript regex literal). OpenCode Go rejects \0 as "not a regex" and
+// fails the whole request, so the translated schema must carry \x00 instead.
+func TestConvertClaudeRequestToOpenAI_ToolPatternNulEscapeIsPortable(t *testing.T) {
+	inputJSON := `{
+		"model": "claude-opus-4",
+		"messages": [{"role": "user", "content": "hi"}],
+		"tools": [{
+			"name": "Artifact",
+			"input_schema": {
+				"type": "object",
+				"properties": {
+					"file_path": {"type": "string", "pattern": "^[^\\0]*$"},
+					"file_paths": {"type": "array", "items": {"type": "string", "minLength": 1, "pattern": "^[^\\0]*$"}},
+					"escaped": {"type": "string", "pattern": "^a\\\\0b$"},
+					"octal": {"type": "string", "pattern": "^\\01$"},
+					"plain": {"type": "string", "pattern": "^[a-z]+$"},
+					"pattern": {"type": "string", "description": "a property that happens to be named pattern"}
+				}
+			}
+		}]
+	}`
+
+	result := ConvertClaudeRequestToOpenAI("deepseek-v4.1-flash", []byte(inputJSON), true)
+	params := gjson.GetBytes(result, "tools.0.function.parameters.properties")
+
+	cases := map[string]string{
+		"file_path.pattern":        `^[^\x00]*$`,
+		"file_paths.items.pattern": `^[^\x00]*$`,
+		"escaped.pattern":          `^a\\0b$`,
+		"octal.pattern":            `^\01$`,
+		"plain.pattern":            `^[a-z]+$`,
+	}
+	for path, want := range cases {
+		if got := params.Get(path).String(); got != want {
+			t.Errorf("%s = %q, want %q", path, got, want)
+		}
+	}
+	if got := params.Get("pattern.type").String(); got != "string" {
+		t.Errorf("property named pattern was mangled: type = %q", got)
+	}
+}

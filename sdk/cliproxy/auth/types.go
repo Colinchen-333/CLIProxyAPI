@@ -89,6 +89,10 @@ type Auth struct {
 	NextRetryAfter time.Time `json:"next_retry_after"`
 	// ModelStates tracks per-model runtime availability data.
 	ModelStates map[string]*ModelState `json:"model_states,omitempty"`
+	// FundsExhaustedUntil is set when the upstream reports the account behind this
+	// credential is out of funds. It blocks the credential for every model until the
+	// deadline. It is runtime-only: a restart or a config reload clears it.
+	FundsExhaustedUntil time.Time `json:"-"`
 
 	// Runtime carries non-serialisable data used during execution (in-memory only).
 	Runtime any `json:"-"`

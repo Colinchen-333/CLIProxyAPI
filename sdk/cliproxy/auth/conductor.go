@@ -1870,6 +1870,9 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 				return nil, errStream
 			}
 			lastErr = errStream
+			if isInsufficientFundsError(errStream) {
+				break
+			}
 			continue
 		}
 
@@ -1918,6 +1921,9 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 				m.MarkResult(ctx, result)
 				discardStreamChunks(streamResult.Chunks)
 				lastErr = bootstrapErr
+				if isInsufficientFundsError(bootstrapErr) {
+					break
+				}
 				continue
 			}
 			rerr := &Error{Message: bootstrapErr.Error()}
@@ -2572,7 +2578,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 				result.Error.HTTPStatus = se.StatusCode()
 			}
 			m.MarkResult(execCtx, result)
-			lastErr = errPrepare
+			lastErr = preferRetryableError(lastErr, errPrepare)
 			continue
 		}
 		var authErr error
@@ -2616,6 +2622,11 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 					return cliproxyexecutor.Response{}, errExec
 				}
 				authErr = errExec
+				if isInsufficientFundsError(errExec) {
+					// The whole credential is out of funds; its other upstream models
+					// would fail the same way.
+					break
+				}
 				continue
 			}
 			m.MarkResult(execCtx, result)
@@ -2626,7 +2637,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			if isRequestInvalidError(authErr) {
 				return cliproxyexecutor.Response{}, authErr
 			}
-			lastErr = authErr
+			lastErr = preferRetryableError(lastErr, authErr)
 			if homeMode {
 				homeAuthCount++
 			}
@@ -2691,7 +2702,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 				result.Error.HTTPStatus = se.StatusCode()
 			}
 			m.MarkResult(execCtx, result)
-			lastErr = errPrepare
+			lastErr = preferRetryableError(lastErr, errPrepare)
 			continue
 		}
 		var authErr error
@@ -2735,6 +2746,11 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 					return cliproxyexecutor.Response{}, errExec
 				}
 				authErr = errExec
+				if isInsufficientFundsError(errExec) {
+					// The whole credential is out of funds; its other upstream models
+					// would fail the same way.
+					break
+				}
 				continue
 			}
 			m.MarkResult(execCtx, result)
@@ -2745,7 +2761,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			if isRequestInvalidError(authErr) {
 				return cliproxyexecutor.Response{}, authErr
 			}
-			lastErr = authErr
+			lastErr = preferRetryableError(lastErr, authErr)
 			if homeMode {
 				homeAuthCount++
 			}
@@ -2808,7 +2824,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 				result.Error.HTTPStatus = se.StatusCode()
 			}
 			m.MarkResult(execCtx, result)
-			lastErr = errPrepare
+			lastErr = preferRetryableError(lastErr, errPrepare)
 			continue
 		}
 		execReq := sanitizeDownstreamWebsocketFallbackRequest(execCtx, auth, req)
@@ -2824,7 +2840,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			if isRequestInvalidError(errStream) {
 				return nil, errStream
 			}
-			lastErr = errStream
+			lastErr = preferRetryableError(lastErr, errStream)
 			if homeMode {
 				homeAuthCount++
 			}
@@ -3670,6 +3686,8 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 	setModelQuota := false
 	var authSnapshot *Auth
 	cooldownStateChanged := false
+	fundsBlockedUntil := time.Time{}
+	fundsProvider := ""
 
 	m.mu.Lock()
 	if auth, ok := m.auths[result.AuthID]; ok && auth != nil {
@@ -3682,6 +3700,13 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 		auth.recordRecentRequest(now, result.Success)
 		if result.Success {
 			auth.Success++
+			// A success proves the account is funded again.
+			if !auth.FundsExhaustedUntil.IsZero() {
+				auth.FundsExhaustedUntil = time.Time{}
+				if auth.StatusMessage == fundsExhaustedStatusMessage {
+					auth.StatusMessage = ""
+				}
+			}
 		} else {
 			auth.Failed++
 		}
@@ -3722,6 +3747,17 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 						next := now.Add(12 * time.Hour)
 						state.NextRetryAfter = next
 						suspendReason = "model_not_supported"
+						shouldSuspendModel = true
+					} else if !disableCooling && isInsufficientFundsResultError(result.Error) {
+						// The account is out of funds: every model of this credential is
+						// affected, so block the credential as a whole (see
+						// isAuthBlockedForModel) rather than only this model's state.
+						state.NextRetryAfter = time.Time{}
+						if markFundsExhaustedLocked(auth, now) {
+							fundsBlockedUntil = auth.FundsExhaustedUntil
+							fundsProvider = auth.Provider
+						}
+						suspendReason = fundsExhaustedStatusMessage
 						shouldSuspendModel = true
 					} else if isCloudflareChallengeResultError(result.Error) {
 						next, backoffLevel := nextCloudflareCooldown(state.Quota.BackoffLevel, disableCooling, now)
@@ -3812,7 +3848,12 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 				}
 			} else {
 				disableCooling := m.cooldownDisabledForAuth(auth)
+				wasFundsBlocked := auth.FundsExhaustedUntil.After(now)
 				applyAuthFailureState(auth, result.Error, result.RetryAfter, now, disableCooling)
+				if !wasFundsBlocked && auth.FundsExhaustedUntil.After(now) {
+					fundsBlockedUntil = auth.FundsExhaustedUntil
+					fundsProvider = auth.Provider
+				}
 			}
 		}
 
@@ -3831,6 +3872,9 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 		m.persistCooldownStates(context.Background())
 	}
 
+	if !fundsBlockedUntil.IsZero() {
+		logFundsExhausted(result.AuthID, fundsProvider, fundsBlockedUntil, statusCodeFromResult(result.Error))
+	}
 	if clearModelQuota && result.Model != "" {
 		registry.GetGlobalRegistry().ClearModelQuotaExceeded(result.AuthID, result.Model)
 	}
@@ -4282,6 +4326,10 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 		}
 	}
 	statusCode := statusCodeFromResult(resultErr)
+	if !disableCooling && isInsufficientFundsResultError(resultErr) {
+		markFundsExhaustedLocked(auth, now)
+		return
+	}
 	if isCloudflareChallengeResultError(resultErr) {
 		auth.StatusMessage = "cloudflare challenge"
 		next, backoffLevel := nextCloudflareCooldown(auth.Quota.BackoffLevel, disableCooling, now)

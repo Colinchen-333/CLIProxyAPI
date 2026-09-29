@@ -1332,6 +1332,10 @@ func (s *Service) applyConfigUpdateWithAuthSynthesis(newCfg *config.Config, synt
 	if s.coreManager != nil {
 		s.coreManager.SetConfig(newCfg)
 		s.coreManager.SetOAuthModelAlias(newCfg.OAuthModelAlias)
+		// A config reload is the operator's signal that funds may have been topped up.
+		if cleared := s.coreManager.ClearFundsCooldowns(); cleared > 0 {
+			log.Infof("config reload cleared the insufficient-funds block on %d credential(s)", cleared)
+		}
 	}
 	ctx := coreauth.WithSkipPersist(context.Background())
 	s.syncPluginRuntimeConfig(ctx)

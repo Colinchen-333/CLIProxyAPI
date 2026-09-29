@@ -558,3 +558,49 @@ func validCodexReasoningSignature() string {
 	raw[8] = 1
 	return base64.URLEncoding.EncodeToString(raw)
 }
+
+// Claude Code's Artifact tool ships file_paths items with pattern ^[^\0]*$
+// (a JavaScript regex literal). The OpenCode Go Responses endpoint rejects the
+// whole schema as invalid, so the translated parameters must carry \x00 instead.
+func TestConvertClaudeRequestToCodex_ToolPatternNulEscapeIsPortable(t *testing.T) {
+	inputJSON := `{
+		"model": "claude-opus-4",
+		"messages": [{"role": "user", "content": "hi"}],
+		"tools": [{
+			"name": "Artifact",
+			"input_schema": {
+				"type": "object",
+				"properties": {
+					"file_path": {"type": "string", "pattern": "^[^\\0]*$"},
+					"file_paths": {"type": "array", "items": {"type": "string", "maxLength": 1024, "minLength": 1, "pattern": "^[^\\0]*$"}},
+					"escaped": {"type": "string", "pattern": "^a\\\\0b$"},
+					"octal": {"type": "string", "pattern": "^\\01$"},
+					"plain": {"type": "string", "pattern": "^[a-z<>&]+$"},
+					"pattern": {"type": "string", "description": "a property that happens to be named pattern"}
+				}
+			}
+		}]
+	}`
+
+	result := ConvertClaudeRequestToCodex("muse-spark-1.3-contributor", []byte(inputJSON), false)
+	params := gjson.GetBytes(result, "tools.0.parameters.properties")
+
+	cases := map[string]string{
+		"file_path.pattern":        `^[^\x00]*$`,
+		"file_paths.items.pattern": `^[^\x00]*$`,
+		"escaped.pattern":          `^a\\0b$`,
+		"octal.pattern":            `^\01$`,
+		"plain.pattern":            `^[a-z<>&]+$`,
+	}
+	for path, want := range cases {
+		if got := params.Get(path).String(); got != want {
+			t.Errorf("%s = %q, want %q", path, got, want)
+		}
+	}
+	if got := params.Get("file_paths.items.maxLength").Raw; got != "1024" {
+		t.Errorf("file_paths.items.maxLength = %s, want 1024", got)
+	}
+	if got := params.Get("pattern.type").String(); got != "string" {
+		t.Errorf("property named pattern was mangled: type = %q", got)
+	}
+}

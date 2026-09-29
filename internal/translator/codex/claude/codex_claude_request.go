@@ -587,5 +587,5 @@ func normalizeToolParameters(raw string) string {
 	if schemaType == "object" && !result.Get("properties").Exists() {
 		schema, _ = sjson.SetRawBytes(schema, "properties", []byte(`{}`))
 	}
-	return string(schema)
+	return string(translatorcommon.PortableSchemaPatterns(schema))
 }

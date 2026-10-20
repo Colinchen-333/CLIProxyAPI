@@ -33,6 +33,33 @@ func TestOwnSessionPseudonymAndIsolation(t *testing.T) {
 	}
 }
 
+func TestOwnSessionSubagentsAreDistinct(t *testing.T) {
+	agent := func(id string) http.Header {
+		h := http.Header{"X-Claude-Code-Session-Id": []string{"s"}}
+		if id != "" {
+			h.Set("X-Claude-Code-Agent-Id", id)
+		}
+		return h
+	}
+	main := ownSession(agent(""), nil, "key")
+	a, b := ownSession(agent("a1"), nil, "key"), ownSession(agent("a2"), nil, "key")
+	if len(a) != 64 || strings.Contains(a, "a1") {
+		t.Fatal("expected opaque subagent pseudonym")
+	}
+	if a == main || b == main || a == b {
+		t.Fatal("each subagent must have its own identity, distinct from the main agent")
+	}
+	if a != ownSession(agent("a1"), nil, "key") {
+		t.Fatal("one subagent must keep one identity across requests")
+	}
+	if ownSession(agent("main"), nil, "key") != main {
+		t.Fatal("the main agent id is the session itself")
+	}
+	if ownSession(http.Header{"X-Claude-Code-Agent-Id": []string{"a1"}}, nil, "key") != "" {
+		t.Fatal("an agent id without a session must not fabricate an identity")
+	}
+}
+
 func TestOwnSessionOnlyInternalWithoutOriginalIdentity(t *testing.T) {
 	h := makeHandler(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)

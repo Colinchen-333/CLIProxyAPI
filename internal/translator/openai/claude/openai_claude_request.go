@@ -283,8 +283,12 @@ func convertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 							msgJSON, _ = sjson.SetBytes(msgJSON, "content", "")
 						}
 
-						// Add reasoning_content if present
-						if hasReasoning {
+						// Add reasoning_content if present. A compatibility endpoint in
+						// thinking mode (DeepSeek) also requires the field on every assistant
+						// message that carries tool_calls: a turn that produced no reasoning
+						// passes it back empty instead of omitting it, which the strict
+						// backends reject with "reasoning_content ... must be passed back".
+						if hasReasoning || (preserveThinkingBlocks && hasToolCalls) {
 							msgJSON, _ = sjson.SetBytes(msgJSON, "reasoning_content", reasoningContent)
 						}
 
